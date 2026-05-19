@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: video-forge-backend
+    env: python
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && python main.py
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8976
+      - key: DOWNLOAD_PATH
+        value: /app/downloads
+    disk:
+      name: downloads
+      mountPath: /app/downloads
+      sizeGB: 10
