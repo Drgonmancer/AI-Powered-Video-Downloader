@@ -1,11 +1,18 @@
 import asyncio
 import os
-import uuid
+import subprocess
+import sys
 import threading
+import uuid
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
 
 from services.downloader import (
     DownloadEngine,
@@ -353,9 +360,62 @@ async def websocket_endpoint(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+def build_frontend():
+    frontend_dir = os.path.join(BASE_DIR, "frontend")
+    pkg_json = os.path.join(frontend_dir, "package.json")
+    if not os.path.exists(pkg_json):
+        print("[Build] No frontend package.json found, skipping build")
+        return
+    node_modules = os.path.join(frontend_dir, "node_modules")
+    if not os.path.exists(node_modules):
+        print("[Build] Installing frontend dependencies...")
+        subprocess.run(
+            ["npm", "install"],
+            cwd=frontend_dir,
+            check=True,
+            capture_output=True,
+        )
+    print("[Build] Building frontend...")
+    result = subprocess.run(
+        ["npx", "vite", "build"],
+        cwd=frontend_dir,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"[Build] Build failed: {result.stderr}")
+    else:
+        print("[Build] Frontend built successfully")
+
+
+def mount_frontend():
+    if os.path.exists(FRONTEND_DIST) and os.listdir(FRONTEND_DIST):
+        app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="static-assets")
+
+        @app.get("/{full_path:path}")
+        async def serve_spa(full_path: str):
+            file_path = os.path.join(FRONTEND_DIST, full_path)
+            if os.path.isfile(file_path):
+                return FileResponse(file_path)
+            return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+
+        print(f"[Frontend] Mounted at / (serving from {FRONTEND_DIST})")
+    else:
+        print(f"[Frontend] No dist folder found at {FRONTEND_DIST}, API only mode")
+
+
 if __name__ == "__main__":
     import uvicorn
 
     os.makedirs(config["download_path"], exist_ok=True)
-    print(f"\n[OK] Server started: http://localhost:8976")
-    uvicorn.run(app, host="127.0.0.1", port=8976)
+
+    is_render = os.environ.get("RENDER", "") or os.environ.get("RENDER_SERVICE_ID", "")
+    if is_render or "--build-frontend" in sys.argv:
+        build_frontend()
+
+    mount_frontend()
+
+    port = int(os.environ.get("PORT", 8976))
+    host = "0.0.0.0" if is_render else "127.0.0.1"
+    print(f"\n[OK] Server started: http://localhost:{port}")
+    uvicorn.run(app, host=host, port=port)

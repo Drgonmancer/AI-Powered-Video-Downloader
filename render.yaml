@@ -1,14 +1,22 @@
 services:
   - type: web
-    name: video-forge-backend
+    name: video-forge-pro
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    plan: free
+    buildCommand: |
+      pip install -r backend/requirements.txt
+      cd frontend && npm install && npm run build
+    startCommand: cd backend && python main.py --build-frontend
     healthCheckPath: /api/health
     envVars:
       - key: PORT
         value: 8976
       - key: PYTHON_VERSION
         value: 3.11.0
-    plan: free
+      - key: NODE_VERSION
+        value: 20
     numInstances: 1
+    disk:
+      name: downloads
+      mountPath: /opt/render/project/downloads
+      sizeGB: 1
