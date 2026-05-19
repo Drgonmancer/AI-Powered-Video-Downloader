@@ -1,1 +1,1 @@
-{"version": 2, "name": "video-forge-frontend", "builds": [{"src": "frontend/package.json", "use": "@vercel/static-build", "config": {"distDir": "dist"}}], "routes": [{"src": "/(.*)", "dest": "/$1"}]}
+{"version": 2, "name": "video-forge-frontend", "builds": [{"src": "frontend/package.json", "use": "@vercel/static-build", "config": {"distDir": "dist"}}], "routes": [{"src": "/api/(.*)", "dest": "https://$RENDER_BACKEND_URL/api/$1", "headers": {"Connection": "keep-alive"}}, {"src": "/ws/(.*)", "dest": "wss://$RENDER_BACKEND_URL/ws/$1"}, {"src": "/(.*)", "dest": "/$1"}]}
