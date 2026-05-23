@@ -1,14 +1,40 @@
 import os
+import re
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 import yt_dlp
+
+
+def normalize_douyin_url(url: str) -> str:
+    domain = urlparse(url).netloc.lower()
+    if 'douyin' not in domain and 'iesdouyin' not in domain:
+        return url
+
+    video_id_match = re.search(r'(?:video|modal_id)[/_:]([\d]+)', url)
+    if video_id_match:
+        video_id = video_id_match.group(1)
+        return f'https://www.douyin.com/video/{video_id}'
+
+    short_id_match = re.search(r'/v/([a-zA-Z0-9]+)', url)
+    if short_id_match:
+        return url
+
+    note_id_match = re.search(r'note/(\d+)', url)
+    if note_id_match:
+        return f'https://www.douyin.com/note/{note_id_match.group(1)}'
+
+    return url
 
 
 def build_headers(url: str) -> dict:
     domain = urlparse(url).netloc.lower()
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
     }
     if 'bilibili' in domain or 'b23.tv' in domain:
         headers['Referer'] = 'https://www.bilibili.com/'
@@ -16,8 +42,15 @@ def build_headers(url: str) -> dict:
         headers['Sec-Fetch-Dest'] = 'empty'
         headers['Sec-Fetch-Mode'] = 'cors'
         headers['Sec-Fetch-Site'] = 'same-site'
-    elif 'douyin' in domain:
-        headers['Referer'] = 'https://www.douyin.com/'
+    elif 'douyin' in domain or 'iesdouyin' in domain:
+        headers.update({
+            'Referer': 'https://www.douyin.com/',
+            'Origin': 'https://www.douyin.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Accept-Encoding': 'gzip, deflate, br',
+        })
     elif 'kuaishou' in domain:
         headers['Referer'] = 'https://www.kuaishou.com/'
     elif 'twitter' in domain or 'x.com' in domain:
@@ -31,11 +64,24 @@ def build_extractor_args(url: str) -> dict:
     domain = urlparse(url).netloc.lower()
     if 'bilibili' in domain or 'b23.tv' in domain:
         return {'bilibili': {'player': 'web'}}
+    elif 'douyin' in domain or 'iesdouyin' in domain:
+        return {
+            'douyin': {
+                'webpage_download': True,
+            },
+            'tiktok': {
+                'api_hostname': 'api16-normal-c-useast1a.tiktokv.com',
+            },
+        }
     return {}
 
 
 def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> dict:
     from services.browser_cookies import get_cookies_for_browser
+
+    url = normalize_douyin_url(url)
+    print(f"[Parser] Processing URL: {url}")
+
     effective_cookies = cookies
     if cookies_from_browser and not effective_cookies:
         domain = urlparse(url).netloc.lower()
@@ -52,14 +98,32 @@ def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> 
         'http_headers': build_headers(url),
         'extractor_args': build_extractor_args(url),
         'no_check_certificates': True,
+        'extractor_retries': 3,
     }
     if effective_cookies:
         ydl_opts['cookie'] = effective_cookies
     if cookies_from_browser:
         ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return normalize_info(info)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return normalize_info(info)
+    except Exception as e:
+        err_msg = str(e)
+        if 'Unsupported URL' in err_msg:
+            raise Exception(f'不支持该链接格式: {url}\n\n建议:\n1. 确认链接是否完整\n2. 尝试使用视频分享页面的原始链接\n3. 某些特殊页面（如合集/直播）可能不支持')
+        elif 'HTTP Error 412' in err_msg:
+            raise Exception('B站反爬虫拦截，请稍后重试或使用Cookie')
+        elif 'HTTP Error 403' in err_msg:
+            raise Exception('访问被拒绝(403)，请检查链接或使用代理')
+        elif 'HTTP Error 404' in err_msg:
+            raise Exception('视频不存在或已被删除(404)')
+        elif 'Sign' in err_msg or 'sign' in err_msg.lower():
+            raise Exception('签名验证失败，该视频需要登录才能下载')
+        elif 'JSON' in err_msg or 'json' in err_msg.lower():
+            raise Exception(f'页面解析失败，可能需要更新 yt-dlp 或使用浏览器Cookie\n错误详情: {err_msg[:200]}')
+        else:
+            raise
 
 
 def normalize_info(raw_info: dict) -> dict:
@@ -221,6 +285,9 @@ class DownloadEngine:
                 ffmpeg_path = winget_paths[0]
                 has_ffmpeg = True
                 print(f"[Downloader] Found ffmpeg: {ffmpeg_path}")
+
+        self.task.url = normalize_douyin_url(self.task.url)
+
         opts = {
             'quiet': True,
             'no_warnings': True,
