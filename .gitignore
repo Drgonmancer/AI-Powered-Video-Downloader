@@ -32,8 +32,15 @@ frontend/dist/
 .env.local
 .env.*.local
 cookies.txt
+
+# SQLite / local data
+backend/data/
 *.db
 *.sqlite3
+
+# Secrets — never commit
+backend/ai_config.py
+backend/config/stripe_config.py
 
 venv/
 .venv/
@@ -42,3 +49,14 @@ logs/
 *.log
 
 Thumbs.db
+
+# Optional local launchers (Windows)
+一键启动.bat
+start.ps1
+start_backend.ps1
+打开网站.bat
+backend.cmd
+backend.ps1
+
+# Legacy / duplicate tree
+源代码/

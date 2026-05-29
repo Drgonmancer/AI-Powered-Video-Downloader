@@ -1,33 +1,116 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useAuthStore } from './auth'
 
 const API_BASE = '/api'
+
+function resolveWebSocketUrl() {
+  const apiBase = import.meta.env.VITE_API_URL
+  if (apiBase) {
+    const url = new URL(apiBase)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    url.pathname = '/ws/downloads'
+    url.search = ''
+    url.hash = ''
+    return url.toString()
+  }
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws/downloads`
+}
 
 export const useDownloadStore = defineStore('download', () => {
   const tasks = ref([])
   const parseResult = ref(null)
   const isParsing = ref(false)
+  const isSummarizing = ref(false)
   const parseError = ref('')
   const settings = ref({})
   const wsConnected = ref(false)
+  const wsStatus = ref('idle') // idle | connecting | connected | reconnecting | failed
   const lastParsedUrl = ref('')
 
   let ws = null
   let reconnectTimer = null
+  let pingTimer = null
   let reconnectAttempts = 0
-  const MAX_RECONNECT_ATTEMPTS = 10
+  const MAX_RECONNECT_ATTEMPTS = 15
 
-  function connectWebSocket() {
+  function clearReconnectTimer() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  function clearPingTimer() {
+    if (pingTimer) {
+      clearInterval(pingTimer)
+      pingTimer = null
+    }
+  }
+
+  function scheduleReconnect(delayMs = 3000) {
+    clearReconnectTimer()
     if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.warn('[WS] Max reconnect attempts reached, stopping auto-reconnect')
+      wsStatus.value = 'failed'
+      wsConnected.value = false
+      console.warn('[WS] Max reconnect attempts reached')
       return
     }
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    ws = new WebSocket(`${protocol}//${location.host}/ws/downloads`)
+    wsStatus.value = 'reconnecting'
+    wsConnected.value = false
+    reconnectAttempts++
+    reconnectTimer = setTimeout(connectWebSocket, delayMs)
+  }
+
+  async function connectWebSocket() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return
+    }
+
+    wsStatus.value = reconnectAttempts > 0 ? 'reconnecting' : 'connecting'
+    wsConnected.value = false
+
+    try {
+      const health = await fetch(`${API_BASE}/health`, { method: 'GET' })
+      if (!health.ok) {
+        throw new Error(`health check failed: ${health.status}`)
+      }
+    } catch (e) {
+      console.warn('[WS] Backend not ready:', e.message)
+      scheduleReconnect(4000)
+      return
+    }
+
+    const wsUrl = resolveWebSocketUrl()
+    console.log('[WS] Connecting to', wsUrl)
+
+    try {
+      ws = new WebSocket(wsUrl)
+    } catch (e) {
+      console.error('[WS] Failed to create WebSocket:', e)
+      scheduleReconnect()
+      return
+    }
+
+    const connectTimeout = setTimeout(() => {
+      if (ws && ws.readyState === WebSocket.CONNECTING) {
+        console.warn('[WS] Connect timeout')
+        ws.close()
+      }
+    }, 10000)
 
     ws.onopen = () => {
+      clearTimeout(connectTimeout)
       wsConnected.value = true
+      wsStatus.value = 'connected'
       reconnectAttempts = 0
+      clearPingTimer()
+      pingTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send('ping')
+        }
+      }, 25000)
     }
 
     ws.onmessage = (event) => {
@@ -37,6 +120,8 @@ export const useDownloadStore = defineStore('download', () => {
           if (data.data && Array.isArray(data.data)) {
             tasks.value = data.data
           }
+        } else if (data.type === 'pong') {
+          // keepalive ack
         } else if (data.id) {
           const idx = tasks.value.findIndex(t => t.id === data.id)
           if (idx >= 0) {
@@ -46,19 +131,23 @@ export const useDownloadStore = defineStore('download', () => {
             tasks.value.unshift({ ...data })
           }
         }
-      } catch (e) {}
-    }
-
-    ws.onclose = () => {
-      wsConnected.value = false
-      reconnectAttempts++
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        reconnectTimer = setTimeout(connectWebSocket, 3000)
+      } catch (e) {
+        console.warn('[WS] Bad message:', e)
       }
     }
 
-    ws.onerror = () => {
+    ws.onclose = (event) => {
+      clearTimeout(connectTimeout)
+      clearPingTimer()
       wsConnected.value = false
+      console.warn('[WS] Closed', event.code, event.reason)
+      scheduleReconnect()
+    }
+
+    ws.onerror = () => {
+      clearTimeout(connectTimeout)
+      wsConnected.value = false
+      console.warn('[WS] Error')
     }
   }
 
@@ -97,6 +186,7 @@ export const useDownloadStore = defineStore('download', () => {
 
   async function parseUrl(url) {
     isParsing.value = true
+    isSummarizing.value = false
     parseError.value = ''
     parseResult.value = null
     lastParsedUrl.value = url
@@ -110,22 +200,52 @@ export const useDownloadStore = defineStore('download', () => {
         const err = await res.json().catch(() => ({ detail: 'Parse failed' }))
         throw new Error(err.detail || 'Parse failed')
       }
-      parseResult.value = await res.json()
+      const info = await res.json()
+      parseResult.value = info
+      isParsing.value = false
+
+      isSummarizing.value = true
+      try {
+        const sumRes = await fetch(`${API_BASE}/summarize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, video_info: info }),
+        })
+        if (sumRes.ok) {
+          const summary = await sumRes.json()
+          if (parseResult.value) parseResult.value = { ...parseResult.value, summary }
+        }
+      } catch (_) {
+        // summary failure is non-fatal
+      } finally {
+        isSummarizing.value = false
+      }
     } catch (e) {
       parseError.value = e.message
-    } finally {
       isParsing.value = false
+      isSummarizing.value = false
     }
   }
 
   async function startDownload(options) {
     try {
+      const authStore = useAuthStore()
+      const headers = { 'Content-Type': 'application/json' }
+
+      if (authStore.token) {
+        headers['Authorization'] = `Bearer ${authStore.token}`
+      }
+
       const res = await fetch(`${API_BASE}/download`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(options),
       })
-      return await res.json().catch(() => ({ error: 'Request failed' }))
+      const data = await res.json().catch(() => ({ error: 'Request failed' }))
+      if (res.status === 429) {
+        return { error: data.detail || '今日下载次数已用完' }
+      }
+      return data
     } catch (e) {
       return { error: e.message }
     }
@@ -184,25 +304,54 @@ export const useDownloadStore = defineStore('download', () => {
     tasks.value.filter(t => t.status === 'completed')
   )
 
+  const wsStatusLabel = computed(() => {
+    switch (wsStatus.value) {
+      case 'connected': return 'connected'
+      case 'connecting': return 'connecting'
+      case 'reconnecting': return 'reconnecting'
+      case 'failed': return 'failed'
+      default: return 'disconnected'
+    }
+  })
+
   function init() {
+    reconnectAttempts = 0
     connectWebSocket()
     fetchSettings()
   }
 
+  function reconnect() {
+    disconnect()
+    reconnectAttempts = 0
+    connectWebSocket()
+  }
+
   function disconnect() {
-    if (reconnectTimer) clearTimeout(reconnectTimer)
+    clearReconnectTimer()
+    clearPingTimer()
     if (ws) {
       ws.onclose = null
       ws.onerror = null
       ws.close()
+      ws = null
     }
+    wsConnected.value = false
+    wsStatus.value = 'idle'
+  }
+
+  function resetSession() {
+    disconnect()
+    tasks.value = []
+    parseResult.value = null
+    parseError.value = ''
+    reconnectAttempts = 0
   }
 
   return {
-    tasks, parseResult, isParsing, parseError,
-    settings, wsConnected, lastParsedUrl,
+    tasks, parseResult, isParsing, isSummarizing, parseError,
+    settings, wsConnected, wsStatus, wsStatusLabel, lastParsedUrl,
     activeTasks, completedTasks,
-    init, disconnect,
+    init, disconnect, reconnect, resetSession,
     parseUrl, startDownload, batchDownload,
     pauseTask, resumeTask, cancelTask,
     convertFile, fetchSettings, updateSettings,

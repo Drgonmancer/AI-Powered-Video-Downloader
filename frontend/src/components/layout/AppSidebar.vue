@@ -40,10 +40,30 @@
 
     <div class="p-4 m-3 rounded-xl bg-gradient-to-br from-[#6C63FF]/10 to-[#3B82F6]/5 border border-[#6C63FF]/10">
       <div class="flex items-center gap-2 mb-2">
-        <div class="w-2 h-2 rounded-full animate-pulse" :class="store.wsConnected ? 'bg-emerald-400' : 'bg-red-400'"></div>
-        <span class="text-xs font-medium" :class="store.wsConnected ? 'text-emerald-400' : 'text-red-400'">
-          {{ store.wsConnected ? t('wsConnected') : t('wsReconnecting') }}
+        <div
+          class="w-2 h-2 rounded-full"
+          :class="[
+            store.wsStatus === 'connected' ? 'bg-emerald-400' :
+            store.wsStatus === 'failed' ? 'bg-gray-500' : 'bg-amber-400 animate-pulse'
+          ]"
+        ></div>
+        <span
+          class="text-xs font-medium"
+          :class="[
+            store.wsStatus === 'connected' ? 'text-emerald-400' :
+            store.wsStatus === 'failed' ? 'text-gray-400' : 'text-amber-400'
+          ]"
+        >
+          {{ wsLabel }}
         </span>
+        <button
+          v-if="store.wsStatus === 'failed'"
+          type="button"
+          class="ml-auto text-[10px] text-[#6C63FF] hover:underline"
+          @click="store.reconnect()"
+        >
+          {{ locale === 'zh' ? '重试' : 'Retry' }}
+        </button>
       </div>
       <p class="text-[11px] text-gray-500">{{ t('wsStatusHint') }}</p>
     </div>
@@ -59,6 +79,17 @@ import { useI18n } from '../../composables/useI18n'
 const store = useDownloadStore()
 const route = useRoute()
 const { t, locale } = useI18n()
+
+const wsLabel = computed(() => {
+  const key = {
+    connected: 'wsConnected',
+    connecting: 'wsConnecting',
+    reconnecting: 'wsReconnecting',
+    failed: 'wsFailed',
+    idle: 'wsDisconnected',
+  }[store.wsStatus] || 'wsDisconnected'
+  return t.value(key)
+})
 
 const isActive = (path) => route.path === path
 

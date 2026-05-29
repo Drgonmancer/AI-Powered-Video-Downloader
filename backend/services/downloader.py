@@ -82,6 +82,17 @@ def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> 
     url = normalize_douyin_url(url)
     print(f"[Parser] Processing URL: {url}")
 
+    domain = urlparse(url).netloc.lower()
+    if 'douyin' in domain or 'iesdouyin' in domain:
+        try:
+            from services.douyin_scraper import parse_douyin
+            result = parse_douyin(url)
+            if result and (result.get('_direct_url') or result.get('formats')):
+                print('[Parser] Douyin scraper succeeded')
+                return result
+        except Exception as e:
+            print(f'[Parser] Douyin scraper failed ({e}), falling back to yt-dlp')
+
     effective_cookies = cookies
     if cookies_from_browser and not effective_cookies:
         domain = urlparse(url).netloc.lower()

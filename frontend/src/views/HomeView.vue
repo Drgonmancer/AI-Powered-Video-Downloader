@@ -1,5 +1,5 @@
 <template>
-  <div class="max-w-5xl mx-auto space-y-8">
+  <div class="max-w-7xl mx-auto space-y-8">
     <div class="text-center mb-10 pt-4">
       <h1 class="text-3xl font-bold mb-3">
         <span class="gradient-text">{{ t('homeTitle') }}</span>
@@ -8,10 +8,34 @@
       <p class="text-gray-500 text-sm max-w-lg mx-auto">
         {{ t('homeDesc') }}
       </p>
+
+      <div v-if="authStore.isLoggedIn" class="mt-4 inline-flex items-center gap-3 px-4 py-2 rounded-xl bg-white/[0.03] border border-white/5">
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-gray-500">{{ locale === 'zh' ? '今日下载' : 'Today' }}</span>
+          <span v-if="isUnlimited" class="text-sm font-bold text-purple-400">∞ 无限</span>
+          <span v-else class="text-sm font-bold" :class="dailyRemaining === 0 ? 'text-red-400' : dailyRemaining <= 2 ? 'text-yellow-400' : 'text-emerald-400'">
+            {{ dailyUsed }}/{{ dailyLimit }}
+          </span>
+        </div>
+        <span v-if="!isUnlimited" class="text-xs" :class="dailyRemaining === 0 ? 'text-red-400' : 'text-gray-500'">
+          {{ dailyRemaining === 0 ? '次数已用完' : '剩余 ' + dailyRemaining + ' 次' }}
+        </span>
+        <span v-if="!isUnlimited && resetHint" class="text-xs text-gray-600" :title="resetsAt">
+          {{ resetHint }}
+        </span>
+        <router-link
+          v-if="dailyRemaining <= 2 && membershipStore.currentPlan !== 'pro'"
+          to="/pricing"
+          class="px-3 py-1 rounded-lg text-xs font-medium bg-gradient-to-r from-[#6C63FF] to-[#3B82F6] text-white hover:opacity-90 transition-opacity"
+        >
+          升级会员
+        </router-link>
+      </div>
     </div>
 
     <UrlInput />
 
+    <!-- Video Preview with AI Features (New Layout) -->
     <VideoPreview />
 
     <section v-if="store.tasks.length > 0" class="space-y-4">
@@ -69,15 +93,59 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useDownloadStore } from '../stores/download'
+import { useAuthStore } from '../stores/auth'
+import { useMembershipStore } from '../stores/membership'
 import { useI18n } from '../composables/useI18n'
 import UrlInput from '../components/download/UrlInput.vue'
 import VideoPreview from '../components/download/VideoPreview.vue'
 import DownloadCard from '../components/download/DownloadCard.vue'
 
 const store = useDownloadStore()
+const authStore = useAuthStore()
+const membershipStore = useMembershipStore()
 const { t, locale } = useI18n()
+
+const dailyUsed = ref(0)
+const dailyLimit = ref(5)
+const dailyRemaining = ref(5)
+const isUnlimited = ref(false)
+const resetsAt = ref('')
+const resetHint = ref('')
+
+function formatResetHint(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return locale.value === 'zh' ? '每日 0 点重置' : 'Resets at midnight'
+  const h = d.getHours().toString().padStart(2, '0')
+  const m = d.getMinutes().toString().padStart(2, '0')
+  return locale.value === 'zh' ? `每日 ${h}:${m} 重置` : `Resets daily ${h}:${m}`
+}
+
+onMounted(() => {
+  fetchUsage()
+})
+
+async function fetchUsage() {
+  if (!authStore.token) return
+  try {
+    const res = await fetch('/api/membership/usage', {
+      headers: { 'Authorization': `Bearer ${authStore.token}` }
+    })
+    const data = await res.json()
+    if (data.success && data.data) {
+      dailyUsed.value = data.data.downloads.used
+      dailyLimit.value = data.data.downloads.limit
+      dailyRemaining.value = data.data.downloads.remaining
+      isUnlimited.value = data.data.is_unlimited
+      resetsAt.value = data.data.resets_at || ''
+      resetHint.value = formatResetHint(resetsAt.value)
+    }
+  } catch (e) {
+    console.warn('Failed to fetch usage:', e)
+  }
+}
 
 const sortedTasks = computed(() =>
   [...store.tasks].sort((a, b) => b.created_at - a.created_at)
@@ -105,18 +173,14 @@ async function handleCancel(id) {
 }
 
 async function handleRetry(task) {
-  await store.startDownload({
+  const result = await store.startDownload({
     url: task.url,
     format_id: task.format_id,
     output_format: task.output_format,
   })
+  if (result && result.error) {
+    alert(result.error)
+  }
+  fetchUsage()
 }
-
-onMounted(() => {
-  store.init()
-})
-
-onUnmounted(() => {
-  store.disconnect()
-})
 </script>
