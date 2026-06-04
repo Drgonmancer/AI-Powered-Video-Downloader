@@ -74,7 +74,9 @@ def get_membership_status(user_id: int) -> Dict[str, Any]:
             "plan": "free",
             "status": "active",
             "is_active": True,
-            "current_period_end": None
+            "current_period_start": None,
+            "current_period_end": None,
+            "cancel_at_period_end": False,
         }
     
     membership_dict = dict(membership)
@@ -99,34 +101,59 @@ def get_membership_status(user_id: int) -> Dict[str, Any]:
     return membership_dict
 
 
+def _valid_stripe_price_id(price_id: Optional[str]) -> bool:
+    if not price_id or not isinstance(price_id, str):
+        return False
+    pid = price_id.strip()
+    return pid.startswith("price_") and "你的" not in pid and len(pid) > 10
+
+
+def _checkout_line_item(price_config: dict) -> dict:
+    """有 Dashboard Price ID 则用订阅价；否则用 price_data 动态创建（免配 price_xxx）。"""
+    if _valid_stripe_price_id(price_config.get("price_id")):
+        return {"price": price_config["price_id"], "quantity": 1}
+    return {
+        "price_data": {
+            "currency": price_config.get("currency", "cny"),
+            "unit_amount": int(price_config["amount"]),
+            "recurring": {"interval": "month"},
+            "product_data": {"name": price_config.get("name", "会员订阅")},
+        },
+        "quantity": 1,
+    }
+
+
 def create_checkout_session(user_id: int, email: str, plan: str) -> str:
     config = get_stripe_config()
-    
+
+    secret_key = (config.get("secret_key") or "").strip()
+    if not secret_key:
+        raise ValueError("未配置 Stripe Secret Key，请创建 backend/config/stripe_config.py")
+
+    stripe.api_key = secret_key
+
     if plan not in config["prices"]:
         raise ValueError(f"无效的套餐: {plan}")
-    
+
     price_config = config["prices"][plan]
-    
+
     membership = get_membership_status(user_id)
     if membership["plan"] != "free" and membership["is_active"]:
         raise ValueError("您已有活跃的订阅")
-    
+
     session = stripe.checkout.Session.create(
         payment_method_types=["card"],
-        line_items=[{
-            "price": price_config["price_id"],
-            "quantity": 1
- }],
+        line_items=[_checkout_line_item(price_config)],
         mode="subscription",
         customer_email=email,
         success_url=f"{config['success_url']}?session_id={{CHECKOUT_SESSION_ID}}",
         cancel_url=config["cancel_url"],
         metadata={
             "user_id": str(user_id),
-            "plan": plan
-        }
+            "plan": plan,
+        },
     )
-    
+
     return session.url
 
 
@@ -313,6 +340,28 @@ def check_daily_download_limit(user_id: int) -> tuple:
     if used >= limit:
         return False, used, 0
     return True, used, remaining
+
+
+def get_usage_snapshot(user_id: int) -> Dict[str, Any]:
+    """当前用户今日下载用量（供 API 响应与前端刷新）。"""
+    allowed, used, remaining = check_daily_download_limit(user_id)
+    membership = get_membership_status(user_id)
+    plan = membership.get("plan", "free")
+    limits = get_download_limits()
+    limit = limits.get(plan, 5)
+    reset_info = get_daily_reset_info()
+    return {
+        "plan": plan,
+        "downloads": {
+            "used": used if used >= 0 else 0,
+            "limit": limit,
+            "remaining": remaining,
+        },
+        "is_unlimited": limit == -1,
+        "usage_date": reset_info["usage_date"],
+        "resets_at": reset_info["resets_at"],
+        "reset_timezone": reset_info["timezone"],
+    }
 
 
 def increment_daily_download_count(user_id: int) -> int:

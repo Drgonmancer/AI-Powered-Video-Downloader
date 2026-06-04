@@ -1,11 +1,11 @@
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import locales from '../locales'
 
 const currentLocale = ref(localStorage.getItem('locale') || 'zh')
 
-const t = computed(() => {
-  return (key) => locales[currentLocale.value]?.[key] || locales['en']?.[key] || key
-})
+function translate(key) {
+  return locales[currentLocale.value]?.[key] || locales.en?.[key] || key
+}
 
 function setLocale(locale) {
   if (locales[locale]) {
@@ -19,5 +19,5 @@ function getLocale() {
 }
 
 export function useI18n() {
-  return { t, setLocale, getLocale, locale: currentLocale }
+  return { t: translate, setLocale, getLocale, locale: currentLocale }
 }

@@ -14,7 +14,19 @@
       </div>
     </div>
 
-    <nav class="flex-1 py-4 px-3 space-y-1">
+    <!-- 今日下载次数 -->
+    <div v-if="authStore.isLoggedIn" class="mx-3 mb-2 px-3 py-2 rounded-xl bg-white/[0.03] border border-white/5">
+      <p class="text-[10px] text-gray-500 mb-1">{{ locale === 'zh' ? '今日下载' : 'Today' }}</p>
+      <p class="text-sm font-bold" :class="usageColorClass">
+        <template v-if="isUnlimited">∞ {{ locale === 'zh' ? '不限' : 'Unlimited' }}</template>
+        <template v-else :key="usageRevision">{{ dailyUsed }}/{{ dailyLimit }}</template>
+      </p>
+      <p v-if="!isUnlimited" class="text-[10px] text-gray-600 mt-0.5">
+        {{ locale === 'zh' ? '剩余' : 'Left' }} {{ dailyRemaining }}
+      </p>
+    </div>
+
+    <nav class="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
       <router-link
         v-for="item in navItems"
         :key="item.path + item.label"
@@ -38,7 +50,11 @@
       </router-link>
     </nav>
 
-    <div class="p-4 m-3 rounded-xl bg-gradient-to-br from-[#6C63FF]/10 to-[#3B82F6]/5 border border-[#6C63FF]/10">
+    <div class="px-3 pb-2">
+      <LlmSidebarPanel />
+    </div>
+
+    <div class="p-4 m-3 rounded-xl bg-gradient-to-br from-[#6C63FF]/10 to-[#3B82F6]/5 border border-[#6C63FF]/10 shrink-0">
       <div class="flex items-center gap-2 mb-2">
         <div
           class="w-2 h-2 rounded-full"
@@ -73,12 +89,26 @@
 <script setup>
 import { useRoute } from 'vue-router'
 import { computed, h } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useDownloadStore } from '../../stores/download'
+import { useAuthStore } from '../../stores/auth'
+import { useMembershipStore } from '../../stores/membership'
 import { useI18n } from '../../composables/useI18n'
+import LlmSidebarPanel from './LlmSidebarPanel.vue'
 
 const store = useDownloadStore()
+const authStore = useAuthStore()
+const membershipStore = useMembershipStore()
+const { dailyUsed, dailyLimit, dailyRemaining, isUnlimited, usageRevision } = storeToRefs(membershipStore)
 const route = useRoute()
 const { t, locale } = useI18n()
+
+const usageColorClass = computed(() => {
+  if (isUnlimited.value) return 'text-purple-400'
+  if (dailyRemaining.value === 0) return 'text-red-400'
+  if (dailyRemaining.value <= 2) return 'text-yellow-400'
+  return 'text-emerald-400'
+})
 
 const wsLabel = computed(() => {
   const key = {
@@ -88,7 +118,7 @@ const wsLabel = computed(() => {
     failed: 'wsFailed',
     idle: 'wsDisconnected',
   }[store.wsStatus] || 'wsDisconnected'
-  return t.value(key)
+  return t(key)
 })
 
 const isActive = (path) => route.path === path
@@ -112,6 +142,12 @@ function SettingsIcon() {
   ])
 }
 
+function UserIcon() {
+  return h('svg', { fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24', class: 'w-5 h-5' }, [
+    h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '2', d: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z' })
+  ])
+}
+
 const navItems = computed(() => [
   { path: '/', label: locale.value === 'zh' ? '首页' : 'Home', icon: HomeIcon },
   {
@@ -120,6 +156,7 @@ const navItems = computed(() => [
     icon: DownloadIcon,
     badge: store.activeTasks.length,
   },
-  { path: '/settings', label: t.value('settings'), icon: SettingsIcon },
+  { path: '/member/center', label: locale.value === 'zh' ? '个人中心' : 'Profile', icon: UserIcon },
+  { path: '/settings', label: t('settings'), icon: SettingsIcon },
 ])
 </script>

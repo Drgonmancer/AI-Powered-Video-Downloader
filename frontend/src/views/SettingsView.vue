@@ -101,7 +101,7 @@
               >
                 <option value="edge" class="text-[#6C63FF]">🔵 Microsoft Edge {{ locale === 'zh' ? '（推荐）' : '(Recommended)' }}</option>
                 <option value="firefox">🦊 Firefox</option>
-                <option value="chrome">🌐 Google Chrome</option>
+                <option value="chrome">🌐 Chrome 浏览器</option>
                 <option value="brave">🦁 Brave</option>
                 <option value="">{{ locale === 'zh' ? '不使用（手动输入上方Cookie）' : 'Disabled (manual)' }}</option>
               </select>

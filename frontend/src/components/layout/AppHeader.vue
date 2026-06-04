@@ -195,7 +195,7 @@ async function handleLogout() {
 
 const titles = computed(() => ({
   '/': { title: locale.value === 'zh' ? '控制台' : 'Dashboard', subtitle: locale.value === 'zh' ? '下载和管理视频' : 'Download & manage videos' },
-  '/settings': { title: t.value('settings'), subtitle: t.value('settingsDesc') },
+  '/settings': { title: t('settings'), subtitle: t('settingsDesc') },
   '/login': { title: locale.value === 'zh' ? '登录' : 'Login', subtitle: '' },
   '/register': { title: locale.value === 'zh' ? '注册' : 'Register', subtitle: '' },
   '/pricing': { title: locale.value === 'zh' ? '会员套餐' : 'Pricing Plans', subtitle: '' },

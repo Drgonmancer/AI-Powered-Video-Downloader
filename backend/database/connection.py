@@ -69,5 +69,19 @@ def init_database() -> None:
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_llm_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            display_name TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com/v1',
+            model TEXT NOT NULL DEFAULT 'deepseek-chat',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    """)
+
     conn.commit()
     conn.close()

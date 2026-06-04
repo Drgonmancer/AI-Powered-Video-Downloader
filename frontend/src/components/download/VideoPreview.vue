@@ -41,17 +41,23 @@
             <div class="flex flex-wrap gap-3 pt-2">
               <button
                 @click="handleDownload('best')"
-                class="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-[#6C63FF] to-[#3B82F6] text-white font-semibold text-sm hover:shadow-lg hover:shadow-purple-500/25 transition-all duration-300 hover:scale-[1.02]"
+                :disabled="store.isSubmittingDownload"
+                class="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-[#6C63FF] to-[#3B82F6] text-white font-semibold text-sm hover:shadow-lg hover:shadow-purple-500/25 transition-all duration-300 hover:scale-[1.02] disabled:opacity-60 disabled:cursor-wait disabled:hover:scale-100"
               >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg v-if="store.isSubmittingDownload" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
-                {{ t('downloadBest') }}
+                {{ store.isSubmittingDownload ? (locale === 'zh' ? '提交中…' : 'Submitting…') : t('downloadBest') }}
               </button>
 
               <button
                 @click="handleDownload('audio')"
-                class="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-300 font-medium text-sm hover:bg-white/10 hover:border-[#6C63FF]/30 transition-all duration-300"
+                :disabled="store.isSubmittingDownload"
+                class="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/5 border border-white/10 text-gray-300 font-medium text-sm hover:bg-white/10 hover:border-[#6C63FF]/30 transition-all duration-300 disabled:opacity-60 disabled:cursor-wait"
               >
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
@@ -123,7 +129,7 @@ async function handleDownload(mode) {
       formatId = bestAudio.format_id
     }
   }
-  await store.startDownload({
+  const result = await store.startDownload({
     url: store.parseResult.entries?.[0] || store.lastParsedUrl || '',
     format_id: formatId,
     output_format: mode === 'audio' ? 'mp3' : store.settings.output_format || 'mp4',
@@ -131,7 +137,11 @@ async function handleDownload(mode) {
     thumbnail: store.parseResult.thumbnail || '',
     platform: store.parseResult.platform || '',
     duration: store.parseResult.duration || 0,
+    _direct_url: store.parseResult._direct_url || '',
   })
+  if (result?.error) {
+    alert(result.error)
+  }
 }
 
 async function handleBatchDownload() {

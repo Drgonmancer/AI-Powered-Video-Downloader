@@ -78,8 +78,14 @@ def build_extractor_args(url: str) -> dict:
 
 def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> dict:
     from services.browser_cookies import get_cookies_for_browser
+    from services.parse_cache import get_cached, set_cached
 
     url = normalize_douyin_url(url)
+    cached = get_cached(url, cookies, cookies_from_browser)
+    if cached:
+        print(f"[Parser] Cache hit: {url[:80]}")
+        return cached
+
     print(f"[Parser] Processing URL: {url}")
 
     domain = urlparse(url).netloc.lower()
@@ -89,6 +95,7 @@ def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> 
             result = parse_douyin(url)
             if result and (result.get('_direct_url') or result.get('formats')):
                 print('[Parser] Douyin scraper succeeded')
+                set_cached(url, result, cookies, cookies_from_browser)
                 return result
         except Exception as e:
             print(f'[Parser] Douyin scraper failed ({e}), falling back to yt-dlp')
@@ -105,20 +112,26 @@ def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> 
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': False,
+        'noplaylist': True,
+        'socket_timeout': 20,
         'http_headers': build_headers(url),
         'extractor_args': build_extractor_args(url),
         'no_check_certificates': True,
-        'extractor_retries': 3,
+        'extractor_retries': 1,
+        'retries': 2,
+        'fragment_retries': 2,
     }
     if effective_cookies:
         ydl_opts['cookie'] = effective_cookies
-    if cookies_from_browser:
+    elif cookies_from_browser:
+        # 已有 cookie 文本时不再重复从浏览器读取（显著加速）
         ydl_opts['cookiesfrombrowser'] = (cookies_from_browser,)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            return normalize_info(info)
+            result = normalize_info(info)
+            set_cached(url, result, cookies, cookies_from_browser)
+            return result
     except Exception as e:
         err_msg = str(e)
         if 'Unsupported URL' in err_msg:
@@ -140,19 +153,34 @@ def parse_video(url: str, cookies: str = '', cookies_from_browser: str = '') -> 
 def normalize_info(raw_info: dict) -> dict:
     formats = []
     if raw_info.get('formats'):
+        candidates = []
         for f in raw_info['formats']:
             if f.get('vcodec') != 'none' or f.get('acodec') != 'none':
-                formats.append({
+                candidates.append({
                     'format_id': f['format_id'],
                     'ext': f.get('ext', ''),
                     'resolution': f.get('resolution', f.get('format_note', '')),
                     'filesize': f.get('filesize') or f.get('filesize_approx', 0),
                     'vcodec': f.get('vcodec', ''),
                     'acodec': f.get('acodec', ''),
-                    'tbr': f.get('tbr', 0),
+                    'tbr': f.get('tbr', 0) or 0,
                 })
+        # 仅保留质量最高的若干格式，加快解析与前端渲染
+        candidates.sort(key=lambda x: x['tbr'], reverse=True)
+        seen = set()
+        for f in candidates:
+            key = (f.get('resolution'), f.get('ext'), f.get('vcodec'))
+            if key in seen:
+                continue
+            seen.add(key)
+            formats.append(f)
+            if len(formats) >= 24:
+                break
 
     best = pick_best_format(formats)
+
+    subs = raw_info.get('subtitles') or {}
+    auto = raw_info.get('automatic_captions') or {}
 
     return {
         'title': raw_info.get('title', ''),
@@ -164,6 +192,8 @@ def normalize_info(raw_info: dict) -> dict:
         ),
         'uploader': raw_info.get('uploader', ''),
         'formats': formats,
+        'subtitles_available': list(subs.keys())[:12],
+        'automatic_captions_available': list(auto.keys())[:12],
         'is_playlist':
             '_type' in raw_info and raw_info['_type'] == 'playlist',
         'playlist_count':
@@ -330,8 +360,8 @@ class DownloadEngine:
                 print(f"[Downloader] Warning: Could not load cookies, will try without")
         if effective_cookies:
             opts['cookie'] = effective_cookies
-        if cookies_from_browser:
-            opts['cookiesfrombrowser'] = (self.config['cookies_from_browser'],)
+        elif cookies_from_browser:
+            opts['cookiesfrombrowser'] = (cookies_from_browser,)
         if has_ffmpeg:
             opts['merge_output_format'] = self.task.output_format
         if self.config.get('speed_limit', 0) > 0:
@@ -372,11 +402,67 @@ class DownloadEngine:
         except Exception as e:
             print(f"[ProgressHook] Error: {e}")
 
+    def _download_direct_url(self) -> bool:
+        """抖音等直链：跳过 yt-dlp 二次解析，直接 HTTP 下载。"""
+        import httpx
+
+        direct = getattr(self.task, '_direct_url', '') or ''
+        if not direct:
+            return False
+
+        safe_title = re.sub(r'[\\/:*?"<>|]', '_', self.task.title or 'video')[:80]
+        ext = self.task.output_format or 'mp4'
+        if not ext.startswith('.'):
+            ext = f'.{ext}'
+        out_path = os.path.join(self.config['download_path'], f'{safe_title}{ext}')
+
+        headers = build_headers(direct)
+        self.task.status = TaskStatus.DOWNLOADING
+        self.task.started_at = time.time()
+        if self.on_progress:
+            self.on_progress(self.task.to_dict())
+
+        with httpx.stream(
+            'GET', direct, headers=headers, follow_redirects=True, timeout=120
+        ) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get('content-length', 0) or 0)
+            downloaded = 0
+            with open(out_path, 'wb') as f:
+                for chunk in resp.iter_bytes(chunk_size=256 * 1024):
+                    if self._cancelled:
+                        raise Exception('Download cancelled')
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        self.task.progress = min((downloaded / total) * 100, 99.9)
+                    else:
+                        self.task.progress = min(self.task.progress + 0.5, 95)
+                    if self.on_progress:
+                        self.on_progress(self.task.to_dict())
+
+        self.task.filepath = out_path
+        self.task.filesize = os.path.getsize(out_path)
+        self.task.progress = 100.0
+        self.task.status = TaskStatus.COMPLETED
+        self.task.completed_at = time.time()
+        if self.on_complete:
+            self.on_complete(self.task.to_dict())
+        return True
+
     def run_in_thread(self):
         try:
             os.makedirs(self.config['download_path'], exist_ok=True)
             self.task.status = TaskStatus.DOWNLOADING
             self.task.started_at = time.time()
+
+            if getattr(self.task, '_direct_url', ''):
+                try:
+                    if self._download_direct_url():
+                        return
+                except Exception as e:
+                    print(f"[Downloader] Direct URL failed ({e}), fallback to yt-dlp")
+
             opts = self.build_ydl_opts()
 
             with yt_dlp.YoutubeDL(opts) as self._ydl:
@@ -468,6 +554,7 @@ class Task:
         self.speed = kwargs.get('speed', '')
         self.eta = kwargs.get('eta', '')
         self.error_message = kwargs.get('error_message', '')
+        self._direct_url = kwargs.get('_direct_url', '')
         self.created_at = kwargs.get('created_at', time.time())
         self.started_at = kwargs.get('started_at')
         self.completed_at = kwargs.get('completed_at')

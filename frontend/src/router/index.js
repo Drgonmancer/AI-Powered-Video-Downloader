@@ -37,6 +37,8 @@ router.beforeEach(async (to, from, next) => {
     if (authStore.token) {
       try {
         await authStore.fetchUser()
+        const { useMembershipStore } = await import('../stores/membership')
+        await useMembershipStore().fetchUsage()
       } catch (e) {
         authStore.logout()
       }

@@ -13,7 +13,7 @@
         <div class="flex items-center gap-2">
           <span class="text-xs text-gray-500">{{ locale === 'zh' ? '今日下载' : 'Today' }}</span>
           <span v-if="isUnlimited" class="text-sm font-bold text-purple-400">∞ 无限</span>
-          <span v-else class="text-sm font-bold" :class="dailyRemaining === 0 ? 'text-red-400' : dailyRemaining <= 2 ? 'text-yellow-400' : 'text-emerald-400'">
+          <span v-else class="text-sm font-bold transition-all duration-300" :class="usageColorClass" :key="usageRevision">
             {{ dailyUsed }}/{{ dailyLimit }}
           </span>
         </div>
@@ -35,8 +35,9 @@
 
     <UrlInput />
 
-    <!-- Video Preview with AI Features (New Layout) -->
     <VideoPreview />
+
+    <VideoSummary />
 
     <section v-if="store.tasks.length > 0" class="space-y-4">
       <div class="flex items-center justify-between">
@@ -93,26 +94,30 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useDownloadStore } from '../stores/download'
 import { useAuthStore } from '../stores/auth'
 import { useMembershipStore } from '../stores/membership'
 import { useI18n } from '../composables/useI18n'
 import UrlInput from '../components/download/UrlInput.vue'
 import VideoPreview from '../components/download/VideoPreview.vue'
+import VideoSummary from '../components/download/VideoSummary.vue'
 import DownloadCard from '../components/download/DownloadCard.vue'
 
 const store = useDownloadStore()
 const authStore = useAuthStore()
 const membershipStore = useMembershipStore()
+const { dailyUsed, dailyLimit, dailyRemaining, isUnlimited, resetsAt, usageRevision } = storeToRefs(membershipStore)
 const { t, locale } = useI18n()
 
-const dailyUsed = ref(0)
-const dailyLimit = ref(5)
-const dailyRemaining = ref(5)
-const isUnlimited = ref(false)
-const resetsAt = ref('')
-const resetHint = ref('')
+const usageColorClass = computed(() => {
+  if (dailyRemaining.value === 0) return 'text-red-400'
+  if (dailyRemaining.value <= 2) return 'text-yellow-400'
+  return 'text-emerald-400'
+})
+
+const resetHint = computed(() => formatResetHint(resetsAt.value))
 
 function formatResetHint(iso) {
   if (!iso) return ''
@@ -124,28 +129,8 @@ function formatResetHint(iso) {
 }
 
 onMounted(() => {
-  fetchUsage()
+  if (authStore.token) membershipStore.fetchUsage()
 })
-
-async function fetchUsage() {
-  if (!authStore.token) return
-  try {
-    const res = await fetch('/api/membership/usage', {
-      headers: { 'Authorization': `Bearer ${authStore.token}` }
-    })
-    const data = await res.json()
-    if (data.success && data.data) {
-      dailyUsed.value = data.data.downloads.used
-      dailyLimit.value = data.data.downloads.limit
-      dailyRemaining.value = data.data.downloads.remaining
-      isUnlimited.value = data.data.is_unlimited
-      resetsAt.value = data.data.resets_at || ''
-      resetHint.value = formatResetHint(resetsAt.value)
-    }
-  } catch (e) {
-    console.warn('Failed to fetch usage:', e)
-  }
-}
 
 const sortedTasks = computed(() =>
   [...store.tasks].sort((a, b) => b.created_at - a.created_at)
@@ -178,9 +163,17 @@ async function handleRetry(task) {
     format_id: task.format_id,
     output_format: task.output_format,
   })
-  if (result && result.error) {
+  if (result?.error) {
     alert(result.error)
   }
-  fetchUsage()
 }
 </script>
+
+<style scoped>
+.gradient-text {
+  background: linear-gradient(135deg, #6C63FF, #3B82F6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+</style>

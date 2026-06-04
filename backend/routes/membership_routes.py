@@ -122,28 +122,14 @@ async def get_usage(current_user: dict = Depends(get_current_user)):
         get_daily_reset_info,
     )
 
-    allowed, used, remaining = check_daily_download_limit(current_user["id"])
-    membership = get_membership_status(current_user["id"])
-    current_plan = membership.get("plan", "free")
-    limits = get_download_limits()
-    limit = limits.get(current_plan, 5)
-    reset_info = get_daily_reset_info()
+    from services.membership_service import get_usage_snapshot
 
     return {
         "success": True,
         "data": {
-            "plan": current_plan,
-            "downloads": {
-                "used": used if used >= 0 else 0,
-                "limit": limit,
-                "remaining": remaining,
-            },
-            "is_unlimited": limit == -1,
-            "usage_date": reset_info["usage_date"],
-            "resets_at": reset_info["resets_at"],
-            "reset_timezone": reset_info["timezone"],
-            "reset_policy": reset_info["reset_policy"],
-        }
+            **get_usage_snapshot(current_user["id"]),
+            "reset_policy": "daily_midnight",
+        },
     }
 
 

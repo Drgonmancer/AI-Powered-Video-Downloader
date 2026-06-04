@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { authApi } from '../api/authApi'
+import { useMembershipStore } from './membership'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
-  const token = ref(localStorage.getItem('token') || '')
+  // 仅内存保存，刷新/关闭页面后须重新登录
+  const token = ref('')
   const loading = ref(false)
   const error = ref('')
 
@@ -13,7 +15,12 @@ export const useAuthStore = defineStore('auth', () => {
   const userName = computed(() => user.value?.username || user.value?.name || '')
   const userAvatar = computed(() => user.value?.avatar || '')
   const role = computed(() => user.value?.role || 'user')
-  const usageCount = computed(() => user.value?.usage_count || 0)
+  const roleLabel = computed(() => user.value?.role_label || '普通用户')
+  const isVip = computed(() => !!user.value?.is_vip)
+  const planName = computed(() => user.value?.plan_name || '免费版')
+  const membership = computed(() => user.value?.membership || null)
+  const usage = computed(() => user.value?.usage || null)
+  const usageCount = computed(() => user.value?.usage_count ?? user.value?.usage?.downloads?.used ?? 0)
 
   async function register(email, password) {
     loading.value = true
@@ -22,7 +29,6 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await authApi.register(email, password)
       token.value = response.data.token
       user.value = response.data
-      localStorage.setItem('token', response.data.token)
       return response
     } catch (err) {
       error.value = err.message
@@ -39,7 +45,6 @@ export const useAuthStore = defineStore('auth', () => {
       const response = await authApi.login(email, password)
       token.value = response.data.token
       user.value = response.data
-      localStorage.setItem('token', response.data.token)
       await fetchUser()
       return response
     } catch (err) {
@@ -56,6 +61,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const response = await authApi.getMe(token.value)
       user.value = response.data
+      useMembershipStore().syncFromProfile(response.data)
     } catch (err) {
       console.error('Failed to fetch user:', err)
       logout()
@@ -80,7 +86,8 @@ export const useAuthStore = defineStore('auth', () => {
     
     try {
       const response = await authApi.uploadAvatar(token.value, file)
-      user.value = { ...user.value, avatar: response.data.avatar }
+      user.value = response.data?.id ? response.data : { ...user.value, ...response.data }
+      useMembershipStore().syncFromProfile(user.value)
       return response
     } catch (err) {
       error.value = err.message
@@ -93,7 +100,8 @@ export const useAuthStore = defineStore('auth', () => {
     
     try {
       const response = await authApi.updateUsername(token.value, username)
-      user.value = { ...user.value, username: response.data.username }
+      user.value = response.data?.membership ? response.data : { ...user.value, ...response.data }
+      useMembershipStore().syncFromProfile(user.value)
       return response
     } catch (err) {
       error.value = err.message
@@ -109,6 +117,8 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function init() {
+    // 清除旧版本写入 localStorage 的 token，避免升级后仍被恢复登录
+    localStorage.removeItem('token')
     if (token.value) {
       fetchUser()
     }
@@ -124,6 +134,11 @@ export const useAuthStore = defineStore('auth', () => {
     userName,
     userAvatar,
     role,
+    roleLabel,
+    isVip,
+    planName,
+    membership,
+    usage,
     usageCount,
     register,
     login,

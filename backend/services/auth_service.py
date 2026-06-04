@@ -40,13 +40,70 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
 
 
-def _row_to_user(row) -> dict:
-    if not row:
-        return {}
-    d = dict(row)
-    from services.membership_service import get_membership_status
+PLAN_FEATURES = {
+    "free": {
+        "max_downloads_per_day": 5,
+        "max_ai_summaries_per_day": 3,
+        "max_quality": "720p",
+        "batch_download": False,
+    },
+    "basic": {
+        "max_downloads_per_day": 50,
+        "max_ai_summaries_per_day": 30,
+        "max_quality": "1080p",
+        "batch_download": True,
+    },
+    "pro": {
+        "max_downloads_per_day": -1,
+        "max_ai_summaries_per_day": -1,
+        "max_quality": "8k",
+        "batch_download": True,
+    },
+}
 
-    membership = get_membership_status(d["id"])
+
+def _role_label(role: str, plan: str, is_active: bool) -> str:
+    if role == "admin":
+        return "管理员"
+    if plan == "pro" and is_active:
+        return "PRO会员"
+    if plan == "basic" and is_active:
+        return "VIP会员"
+    return "普通用户"
+
+
+def _plan_display_name(plan: str) -> str:
+    return {"free": "免费版", "basic": "基础版", "pro": "专业版"}.get(plan, plan)
+
+
+def get_user_profile(user_id: int) -> Optional[dict]:
+    """聚合用户资料、会员权益与当日用量。"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    from services.membership_service import (
+        get_membership_status,
+        check_daily_download_limit,
+        get_daily_reset_info,
+        get_download_limits,
+    )
+
+    d = dict(row)
+    membership = get_membership_status(user_id)
+    plan = membership.get("plan", "free")
+    is_active = membership.get("is_active", True)
+    features = PLAN_FEATURES.get(plan, PLAN_FEATURES["free"])
+
+    allowed, used, remaining = check_daily_download_limit(user_id)
+    limits = get_download_limits()
+    limit = limits.get(plan, 5)
+    reset_info = get_daily_reset_info()
+
     return {
         "id": d["id"],
         "user_id": d["id"],
@@ -55,10 +112,44 @@ def _row_to_user(row) -> dict:
         "name": d.get("username") or "",
         "avatar": d.get("avatar") or "",
         "role": d.get("role") or "user",
+        "role_label": _role_label(d.get("role") or "user", plan, is_active),
         "created_at": d.get("created_at"),
-        "plan": membership.get("plan", "free"),
-        "usage_count": 0,
+        "plan": plan,
+        "plan_name": _plan_display_name(plan),
+        "is_vip": plan in ("basic", "pro") and is_active,
+        "membership": {
+            "plan": plan,
+            "plan_name": _plan_display_name(plan),
+            "status": membership.get("status", "active"),
+            "is_active": is_active,
+            "current_period_start": membership.get("current_period_start"),
+            "current_period_end": membership.get("current_period_end"),
+            "cancel_at_period_end": bool(membership.get("cancel_at_period_end")),
+            "features": features,
+        },
+        "usage": {
+            "downloads": {
+                "used": used if used >= 0 else 0,
+                "limit": limit,
+                "remaining": remaining,
+                "is_unlimited": limit == -1,
+            },
+            "ai_summaries": {
+                "limit": features.get("max_ai_summaries_per_day", 3),
+                "note": "按套餐额度展示",
+            },
+            "usage_date": reset_info["usage_date"],
+            "resets_at": reset_info["resets_at"],
+            "reset_timezone": reset_info["timezone"],
+        },
+        "usage_count": used if used >= 0 else 0,
     }
+
+
+def _row_to_user(row) -> dict:
+    if not row:
+        return {}
+    return get_user_profile(row["id"]) or {}
 
 
 def get_user_by_id(user_id: int) -> Optional[dict]:

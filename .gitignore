@@ -60,3 +60,7 @@ backend.ps1
 
 # Legacy / duplicate tree
 源代码/
+
+# IDE / tooling
+.codegraph/
+skills-lock.json

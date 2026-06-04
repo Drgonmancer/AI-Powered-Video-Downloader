@@ -2,6 +2,29 @@ import os
 import sys
 import tempfile
 import shutil
+import time
+from typing import Optional, Tuple
+
+_COOKIE_CACHE: dict = {}
+_COOKIE_TTL_SEC = 300
+
+
+def _cache_get(browser: str, domain: Optional[str]) -> Optional[str]:
+    key = f"{browser}|{domain or '*'}"
+    entry = _COOKIE_CACHE.get(key)
+    if not entry:
+        return None
+    ts, value = entry
+    if time.time() - ts > _COOKIE_TTL_SEC:
+        _COOKIE_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(browser: str, domain: Optional[str], value: str) -> None:
+    key = f"{browser}|{domain or '*'}"
+    _COOKIE_CACHE[key] = (time.time(), value)
+
 
 def get_edge_cookies(domain: str = None) -> str:
     cookies_str = ""
@@ -48,6 +71,10 @@ def _get_edge_cookies_via_ytdlp_fallback() -> str:
         return ""
 
 def get_cookies_for_browser(browser: str, domain: str = None) -> str:
+    cached = _cache_get(browser, domain)
+    if cached is not None:
+        return cached
+
     browser_map = {
         'edge': ('edge', get_edge_cookies),
         'chrome': ('chrome', lambda d: _get_chromium_cookies('chrome', d)),
@@ -58,7 +85,9 @@ def get_cookies_for_browser(browser: str, domain: str = None) -> str:
         return ""
     _, func = browser_map[browser]
     try:
-        return func(domain)
+        result = func(domain)
+        _cache_set(browser, domain, result or "")
+        return result
     except Exception as e:
         print(f"[BrowserCookie] Error reading {browser} cookies: {e}")
         return ""

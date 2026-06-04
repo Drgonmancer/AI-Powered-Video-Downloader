@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useAuthStore } from './auth'
+import { useMembershipStore } from './membership'
 
 const API_BASE = '/api'
 
@@ -23,6 +24,7 @@ export const useDownloadStore = defineStore('download', () => {
   const parseResult = ref(null)
   const isParsing = ref(false)
   const isSummarizing = ref(false)
+  const isSubmittingDownload = ref(false)
   const parseError = ref('')
   const settings = ref({})
   const wsConnected = ref(false)
@@ -122,6 +124,8 @@ export const useDownloadStore = defineStore('download', () => {
           }
         } else if (data.type === 'pong') {
           // keepalive ack
+        } else if (data.type === 'usage' && data.data) {
+          refreshUsage(data.data)
         } else if (data.id) {
           const idx = tasks.value.findIndex(t => t.id === data.id)
           if (idx >= 0) {
@@ -203,23 +207,8 @@ export const useDownloadStore = defineStore('download', () => {
       const info = await res.json()
       parseResult.value = info
       isParsing.value = false
-
-      isSummarizing.value = true
-      try {
-        const sumRes = await fetch(`${API_BASE}/summarize`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url, video_info: info }),
-        })
-        if (sumRes.ok) {
-          const summary = await sumRes.json()
-          if (parseResult.value) parseResult.value = { ...parseResult.value, summary }
-        }
-      } catch (_) {
-        // summary failure is non-fatal
-      } finally {
-        isSummarizing.value = false
-      }
+      // AI 分析后台执行，不阻塞解析完成后的预览与下载
+      runSummarizeInBackground(url, info)
     } catch (e) {
       parseError.value = e.message
       isParsing.value = false
@@ -227,9 +216,62 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
-  async function startDownload(options) {
+  function refreshUsage(usageData) {
+    const ms = useMembershipStore()
+    if (usageData) {
+      ms.applyUsage(usageData)
+    } else {
+      ms.fetchUsage()
+    }
+  }
+
+  async function runSummarizeInBackground(url, info) {
+    isSummarizing.value = true
     try {
       const authStore = useAuthStore()
+      const sumHeaders = { 'Content-Type': 'application/json' }
+      if (authStore.token) {
+        sumHeaders['Authorization'] = `Bearer ${authStore.token}`
+      }
+      const sumRes = await fetch(`${API_BASE}/summarize`, {
+        method: 'POST',
+        headers: sumHeaders,
+        body: JSON.stringify({ url, video_info: info }),
+      })
+      if (sumRes.ok) {
+        const summary = await sumRes.json()
+        if (parseResult.value) parseResult.value = { ...parseResult.value, summary }
+      } else {
+        const err = await sumRes.json().catch(() => ({}))
+        const msg = err.detail || err.message || 'AI 分析请求失败'
+        if (parseResult.value) {
+          parseResult.value = {
+            ...parseResult.value,
+            summary: { enabled: false, summary: '', mindmap: '', transcript: '', message: msg },
+          }
+        }
+      }
+    } catch (sumErr) {
+      if (parseResult.value) {
+        parseResult.value = {
+          ...parseResult.value,
+          summary: { enabled: false, summary: '', mindmap: '', transcript: '', message: sumErr.message || 'AI 分析失败' },
+        }
+      }
+    } finally {
+      isSummarizing.value = false
+    }
+  }
+
+  async function startDownload(options) {
+    const authStore = useAuthStore()
+    const membershipStore = useMembershipStore()
+    if (isSubmittingDownload.value) return { error: '正在提交下载，请稍候' }
+    isSubmittingDownload.value = true
+    if (authStore.token) {
+      membershipStore.optimisticUseDownload()
+    }
+    try {
       const headers = { 'Content-Type': 'application/json' }
 
       if (authStore.token) {
@@ -243,11 +285,59 @@ export const useDownloadStore = defineStore('download', () => {
       })
       const data = await res.json().catch(() => ({ error: 'Request failed' }))
       if (res.status === 429) {
+        await refreshUsage()
         return { error: data.detail || '今日下载次数已用完' }
+      }
+      if (res.ok) {
+        await refreshUsage(data.usage || null)
+      } else if (authStore.token) {
+        await refreshUsage()
+      }
+      return data
+    } catch (e) {
+      if (authStore.token) await refreshUsage()
+      return { error: e.message }
+    } finally {
+      isSubmittingDownload.value = false
+    }
+  }
+
+  async function regenerateMindmap() {
+    if (!parseResult.value) return { error: '请先解析视频' }
+    isSummarizing.value = true
+    try {
+      const authStore = useAuthStore()
+      const headers = { 'Content-Type': 'application/json' }
+      if (authStore.token) {
+        headers['Authorization'] = `Bearer ${authStore.token}`
+      }
+      const res = await fetch(`${API_BASE}/summarize`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          url: lastParsedUrl.value,
+          video_info: parseResult.value,
+          mode: 'mindmap',
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.detail || data.message || '生成失败')
+      }
+      const prev = parseResult.value.summary || {}
+      parseResult.value = {
+        ...parseResult.value,
+        summary: {
+          ...prev,
+          ...data,
+          enabled: data.enabled !== false,
+        },
       }
       return data
     } catch (e) {
       return { error: e.message }
+    } finally {
+      isSummarizing.value = false
     }
   }
 
@@ -348,11 +438,11 @@ export const useDownloadStore = defineStore('download', () => {
   }
 
   return {
-    tasks, parseResult, isParsing, isSummarizing, parseError,
+    tasks, parseResult, isParsing, isSummarizing, isSubmittingDownload, parseError,
     settings, wsConnected, wsStatus, wsStatusLabel, lastParsedUrl,
     activeTasks, completedTasks,
     init, disconnect, reconnect, resetSession,
-    parseUrl, startDownload, batchDownload,
+    parseUrl, startDownload, batchDownload, regenerateMindmap,
     pauseTask, resumeTask, cancelTask,
     convertFile, fetchSettings, updateSettings,
   }

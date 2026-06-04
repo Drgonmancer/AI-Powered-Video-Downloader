@@ -2,7 +2,6 @@
 export async function refreshSessionAfterLogin() {
   const { useMembershipStore } = await import('../stores/membership')
   const membershipStore = useMembershipStore()
-  membershipStore.membership = null
   membershipStore.error = ''
   await membershipStore.fetchMembershipStatus()
 
@@ -14,7 +13,6 @@ export async function refreshSessionAfterLogin() {
 export async function clearSessionOnLogout() {
   const { useMembershipStore } = await import('../stores/membership')
   const membershipStore = useMembershipStore()
-  membershipStore.membership = null
   membershipStore.error = ''
 
   const { useDownloadStore } = await import('../stores/download')

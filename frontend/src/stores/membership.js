@@ -7,10 +7,19 @@ export const useMembershipStore = defineStore('membership', () => {
   const plan = ref('free')
   const status = ref('active')
   const isActive = ref(true)
+  const currentPeriodStart = ref(null)
   const currentPeriodEnd = ref(null)
   const cancelAtPeriodEnd = ref(false)
   const loading = ref(false)
   const error = ref('')
+
+  const dailyUsed = ref(0)
+  const dailyLimit = ref(5)
+  const dailyRemaining = ref(5)
+  const isUnlimited = ref(false)
+  const resetsAt = ref('')
+  const usageDate = ref('')
+  const usageRevision = ref(0)
 
   const currentPlan = computed(() => plan.value || 'free')
   const isPro = computed(() => currentPlan.value === 'pro' && isActive.value)
@@ -41,6 +50,7 @@ export const useMembershipStore = defineStore('membership', () => {
       plan.value = data.plan || 'free'
       status.value = data.status || 'active'
       isActive.value = data.is_active !== false
+      currentPeriodStart.value = data.current_period_start || null
       currentPeriodEnd.value = data.current_period_end || null
       cancelAtPeriodEnd.value = !!data.cancel_at_period_end
     } catch (err) {
@@ -61,6 +71,65 @@ export const useMembershipStore = defineStore('membership', () => {
     return res
   }
 
+  function applyUsage(data) {
+    if (!data) return
+    dailyUsed.value = data.downloads?.used ?? 0
+    dailyLimit.value = data.downloads?.limit ?? 5
+    dailyRemaining.value = data.downloads?.remaining ?? 0
+    isUnlimited.value = !!data.is_unlimited
+    resetsAt.value = data.resets_at || ''
+    usageDate.value = data.usage_date || ''
+    usageRevision.value += 1
+
+    const auth = useAuthStore()
+    if (auth.user) {
+      auth.$patch({
+        user: {
+          ...auth.user,
+          usage: data,
+          usage_count: data.downloads?.used ?? 0,
+        },
+      })
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('app:usage-updated', { detail: data }))
+    }
+  }
+
+  /** 下载发起时的乐观 +1，失败时由 applyUsage 覆盖 */
+  function optimisticUseDownload() {
+    if (isUnlimited.value) return
+    dailyUsed.value += 1
+    dailyRemaining.value = Math.max(0, (dailyLimit.value || 5) - dailyUsed.value)
+    usageRevision.value += 1
+  }
+
+  async function fetchUsage() {
+    const token = _token()
+    if (!token) return
+    try {
+      const res = await membershipApi.getUsage(token)
+      applyUsage(res.data)
+    } catch (err) {
+      console.warn('[Usage]', err.message)
+    }
+  }
+
+  function syncFromProfile(profile) {
+    if (!profile) return
+    const m = profile.membership || {}
+    plan.value = m.plan || profile.plan || 'free'
+    status.value = m.status || 'active'
+    isActive.value = m.is_active !== false
+    currentPeriodStart.value = m.current_period_start || null
+    currentPeriodEnd.value = m.current_period_end || null
+    cancelAtPeriodEnd.value = !!m.cancel_at_period_end
+    if (profile.usage) {
+      applyUsage(profile.usage)
+    }
+  }
+
   async function cancelSubscription() {
     const token = _token()
     if (!token) throw new Error('请先登录')
@@ -76,8 +145,20 @@ export const useMembershipStore = defineStore('membership', () => {
     currentPlan,
     isPro,
     isBasic,
+    currentPeriodStart,
     currentPeriodEnd,
     cancelAtPeriodEnd,
+    syncFromProfile,
+    dailyUsed,
+    dailyLimit,
+    dailyRemaining,
+    isUnlimited,
+    resetsAt,
+    usageDate,
+    usageRevision,
+    applyUsage,
+    optimisticUseDownload,
+    fetchUsage,
     membershipTimeRemaining,
     loading,
     error,

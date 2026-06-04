@@ -32,6 +32,7 @@ from database.connection import init_database
 from routes.auth_routes import router as auth_router
 from routes.membership_routes import router as membership_router
 from routes.watermark_routes import router as watermark_router
+from routes.llm_routes import router as llm_router
 
 init_database()
 
@@ -192,7 +193,7 @@ async def api_parse(req: dict):
 
 
 @app.post("/api/summarize")
-async def api_summarize(req: dict):
+async def api_summarize(req: dict, current_user: dict = Depends(get_optional_user)):
     """Async AI summary – called after /api/parse returns so UI is not blocked."""
     url = req.get("url", "")
     video_info = req.get("video_info") or {}
@@ -200,6 +201,9 @@ async def api_summarize(req: dict):
         raise HTTPException(status_code=400, detail="url or video_info required")
     cookies = config.get("cookies", "")
     cookies_from_browser = config.get("cookies_from_browser", "")
+    user_id = current_user.get("id") if current_user else None
+    provider_id = req.get("provider_id")
+    mode = req.get("mode", "full")
     loop = asyncio.get_event_loop()
     summary = await loop.run_in_executor(
         None,
@@ -209,6 +213,9 @@ async def api_summarize(req: dict):
             cookies=cookies,
             cookies_from_browser=cookies_from_browser,
             locale=config.get("locale", "zh"),
+            user_id=user_id,
+            provider_id=provider_id,
+            mode=mode,
         ),
     )
     return summary
@@ -222,8 +229,13 @@ async def api_download(req: dict, current_user: dict = Depends(get_optional_user
 
     user_id = current_user.get("id") if current_user else None
 
+    usage_payload = None
     if user_id:
-        from services.membership_service import check_daily_download_limit, increment_daily_download_count
+        from services.membership_service import (
+            check_daily_download_limit,
+            increment_daily_download_count,
+            get_usage_snapshot,
+        )
         allowed, used, remaining = check_daily_download_limit(user_id)
         if not allowed:
             raise HTTPException(
@@ -231,6 +243,7 @@ async def api_download(req: dict, current_user: dict = Depends(get_optional_user
                 detail=f"今日下载次数已用完({used}次)。请升级会员或明天再来！"
             )
         increment_daily_download_count(user_id)
+        usage_payload = get_usage_snapshot(user_id)
 
     task = Task(
         url=url,
@@ -247,7 +260,11 @@ async def api_download(req: dict, current_user: dict = Depends(get_optional_user
         tasks[task.id] = task
     _safe_broadcast(task.to_dict())
     asyncio.create_task(start_download(task))
-    return {"task_id": task.id, "status": "queued"}
+    resp = {"task_id": task.id, "status": "queued"}
+    if usage_payload:
+        resp["usage"] = usage_payload
+        asyncio.create_task(ws_manager.broadcast({"type": "usage", "data": usage_payload}))
+    return resp
 
 
 @app.get("/api/downloads")
@@ -573,13 +590,14 @@ def build_frontend():
         )
     print("[Build] Building frontend...")
     result = subprocess.run(
-        ["npx", "vite", "build"],
+        ["npm", "run", "build"],
         cwd=frontend_dir,
-        capture_output=True,
+        capture_output=False,
         text=True,
+        shell=os.name == "nt",
     )
     if result.returncode != 0:
-        print(f"[Build] Build failed: {result.stderr}")
+        print(f"[Build] Build failed (exit {result.returncode})")
     else:
         print("[Build] Frontend built successfully")
 
@@ -654,10 +672,21 @@ def mount_frontend():
                     del response.headers['Last-Modified']
             return response
 
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def serve_spa(full_path: str):
+        from fastapi import Request
+        from fastapi.responses import JSONResponse
+
+        @app.api_route(
+            "/{full_path:path}",
+            methods=["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+            include_in_schema=False,
+        )
+        async def serve_spa(request: Request, full_path: str):
             if full_path.startswith("api/") or full_path.startswith("ws/"):
-                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=404,
+                    content={"detail": f"Route not found: /{full_path}"},
+                )
+            if request.method not in ("GET", "HEAD"):
                 return JSONResponse(
                     status_code=404,
                     content={"detail": f"Route not found: /{full_path}"},
@@ -689,21 +718,33 @@ def mount_frontend():
 
 
 def setup_frontend(*, allow_build: bool = False) -> bool:
-    index_path = os.path.join(FRONTEND_DIST, "index.html")
-    if allow_build and not os.path.isfile(index_path):
+    """allow_build=True 时始终重新构建 frontend/dist（本地一键启动用）。"""
+    if allow_build:
         build_frontend()
     return mount_frontend()
 
 
-app.include_router(auth_router)
-app.include_router(membership_router)
-app.include_router(watermark_router)
+def _register_api_routers():
+    app.include_router(auth_router)
+    app.include_router(membership_router)
+    app.include_router(watermark_router)
+    app.include_router(llm_router)
+
+
+_register_api_routers()
 
 print("[Membership] 会员系统已启用 - 认证API: /api/auth/*, 会员API: /api/membership/*")
+print("[LLM] 大模型配置API: /api/llm/providers (GET/POST/DELETE)")
 
 
-# uvicorn main:app 导入时即挂载前端（start.py / 生产部署均依赖此逻辑）
-setup_frontend(allow_build=False)
+def _should_build_frontend() -> bool:
+    if "--build-frontend" in sys.argv:
+        return True
+    return os.environ.get("BUILD_FRONTEND", "").lower() in ("1", "true", "yes")
+
+
+# API 路由必须先于 SPA 回退注册；一键启动传 --build-frontend 会先构建再挂载前端
+setup_frontend(allow_build=_should_build_frontend())
 
 
 if __name__ == "__main__":
@@ -712,7 +753,7 @@ if __name__ == "__main__":
     os.makedirs(config["download_path"], exist_ok=True)
 
     is_render = os.environ.get("RENDER", "") or os.environ.get("RENDER_SERVICE_ID", "")
-    if is_render or "--build-frontend" in sys.argv:
+    if is_render and not os.path.isfile(os.path.join(FRONTEND_DIST, "index.html")):
         setup_frontend(allow_build=True)
 
     port = int(os.environ.get("PORT", 9000))

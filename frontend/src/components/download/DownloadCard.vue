@@ -159,17 +159,17 @@ function proxyUrl(url) {
 const isProgressStatus = computed(() => ['queued', 'downloading', 'merging'].includes(props.task.status))
 
 const statusMap = computed(() => ({
-  queued: { label: t.value('queued'), badge: 'bg-gray-500/10 text-gray-400 border: border-gray-500/10' },
-  downloading: { label: t.value('downloading'), badge: 'bg-blue-500/10 text-blue-400 border: border-blue-500/20' },
-  paused: { label: t.value('paused'), badge: 'bg-yellow-500/10 text-yellow-400 border: border-yellow-500/20' },
-  merging: { label: t.value('processing'), badge: 'bg-purple-500/10 text-purple-400 border: border-purple-500/20' },
-  completed: { label: t.value('completed'), badge: 'bg-emerald-500/10 text-emerald-400 border: border-emerald-500/20' },
-  failed: { label: t.value('failed'), badge: 'bg-red-500/10 text-red-400 border: border-red-500/20' },
+  queued: { label: t('queued'), badge: 'bg-gray-500/10 text-gray-400 border border-gray-500/10' },
+  downloading: { label: t('downloading'), badge: 'bg-blue-500/10 text-blue-400 border border-blue-500/20' },
+  paused: { label: t('paused'), badge: 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' },
+  merging: { label: t('processing'), badge: 'bg-purple-500/10 text-purple-400 border border-purple-500/20' },
+  completed: { label: t('completed'), badge: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' },
+  failed: { label: t('failed'), badge: 'bg-red-500/10 text-red-400 border border-red-500/20' },
 }))
 
 const statusInfo = computed(() => statusMap.value[props.task.status] || statusMap.value.queued)
-const statusLabel = statusInfo.value.label
-const statusBadgeClass = statusInfo.value.badge
+const statusLabel = computed(() => statusInfo.value.label)
+const statusBadgeClass = computed(() => statusInfo.value.badge)
 
 const statusBorderClass = computed(() => {
   const map = {

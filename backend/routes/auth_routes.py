@@ -3,6 +3,7 @@ from pydantic import BaseModel, EmailStr
 
 from middleware.auth_middleware import get_current_user
 from services.auth_service import (
+    get_user_profile,
     login_user,
     register_user,
     save_avatar,
@@ -51,7 +52,19 @@ async def login(body: LoginRequest):
 
 @router.get("/me")
 async def me(current_user: dict = Depends(get_current_user)):
-    return {"success": True, "data": current_user}
+    profile = get_user_profile(current_user["id"])
+    if not profile:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"success": True, "data": profile}
+
+
+@router.get("/profile")
+async def profile(current_user: dict = Depends(get_current_user)):
+    """个人中心：资料 + 会员 + 用量统计。"""
+    data = get_user_profile(current_user["id"])
+    if not data:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"success": True, "data": data}
 
 
 @router.put("/profile")
